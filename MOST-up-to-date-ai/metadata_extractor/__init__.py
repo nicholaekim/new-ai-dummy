@@ -12,7 +12,6 @@ __version__ = "0.2.0"  # Bumped version for major refactoring
 # Set up logging configuration
 import logging
 
-# Configure basic logging - will be overridden by main application if needed
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'

@@ -18,6 +18,35 @@ var/
 wheels/
 *.egg-info/
 .installed.cfg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Credentials
+credentials/*
+!credentials/service_account_key.json.example
+!credentials/README.md
+*.key
+*.pem
+
+# Logs
+*.log
+
+# Local development
+.env
+.env.local
+
+# System Files
+.DS_Store
+Thumbs.db
 *.egg
 
 # Virtual Environment

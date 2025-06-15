@@ -1,19 +1,23 @@
 """
 OCR (Optical Character Recognition) helper functions for the metadata extractor.
 
-This module provides functions to preprocess images and perform OCR on PDF documents.
+This module provides functions to preprocess images and perform OCR on PDF documents,
+including extracting titles from the first page of PDFs.
 """
 
 import logging
-import os
+import re
 from pathlib import Path
-from typing import Tuple, List, Dict, Any, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union, cast
+
 import cv2
 import numpy as np
-from PIL import Image
 import pytesseract
+from PIL import Image
 from pdf2image import convert_from_path
-from pdf2image.exceptions import PDFPageCountError, PDFSyntaxError
+from pdf2image.exceptions import PDFPageCountError
+
+from ..config import TESSERACT_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +100,8 @@ def ocr_pdf(
         PDFPageCountError: If PDF is empty or corrupted
         RuntimeError: If OCR processing fails
     """
-    if not os.path.exists(pdf_path):
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
     
     try:
@@ -143,23 +148,128 @@ def ocr_pdf(
         logger.error(f"Invalid or empty PDF: {pdf_path}")
         raise RuntimeError(f"Failed to process PDF (may be empty or corrupted): {str(e)}")
     except Exception as e:
-        logger.error(f"Error during OCR processing of {pdf_path}: {str(e)}", exc_info=True)
+        logger.error(f"Error in ocr_pdf: {str(e)}")
         raise RuntimeError(f"OCR processing failed: {str(e)}")
+
+
+def extract_title_from_first_page(
+    pdf_path: Union[str, Path],
+    dpi: int = 300,
+    lang: str = 'eng',
+    max_lines: int = 10,
+    min_confidence: float = 70.0
+) -> Optional[str]:
+    """
+    Extract a title from the first page of a PDF document.
+    
+    This function performs OCR on the first page of the PDF and attempts to identify
+    the title by looking for the first significant line of text with sufficient confidence.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        dpi: DPI for image conversion (default: 300)
+        lang: Language for OCR (default: 'eng')
+        max_lines: Maximum number of lines to consider from the top of the page
+        min_confidence: Minimum confidence threshold for OCR results (0-100)
         
-        # Calculate overall confidence
-        overall_confidence = (total_confidence / total_chars) if total_chars > 0 else 0
+    Returns:
+        Extracted title as a string, or None if no suitable title could be found
         
-        # Prepare metadata
-        metadata = {
-            'num_pages': len(images),
-            'ocr_confidence': overall_confidence,
-            'language': lang,
+    Raises:
+        FileNotFoundError: If PDF file doesn't exist
+        PDFPageCountError: If PDF is empty or corrupted
+        RuntimeError: If OCR processing fails
+    """
+    try:
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+            
+        # Convert only the first page of the PDF to an image
+        images = convert_from_path(
+            str(pdf_path),
+            first_page=1,
+            last_page=1,
+            dpi=dpi,
+            thread_count=1
+        )
+        
+        if not images:
+            logger.warning(f"No pages found in PDF: {pdf_path}")
+            return None
+            
+        # Preprocess the first page image
+        img = preprocess_page(images[0])
+        
+        # Configure Tesseract
+        custom_config = TESSERACT_CONFIG.copy()
+        custom_config.update({
+            'lang': lang,
             'dpi': dpi,
-            'preprocessing': 'adaptive_thresholding'
-        }
+            'config': '--psm 6 --oem 1'  # Assume a single uniform block of text, use LSTM OCR Engine
+        })
         
-        return '\n\n'.join(all_text), metadata
+        # Get OCR data including text and confidence
+        data = pytesseract.image_to_data(
+            img,
+            output_type=pytesseract.Output.DICT,
+            **custom_config
+        )
+        
+        # Extract text with confidence scores
+        lines: Dict[int, Dict[str, List[Any]]] = {}
+        
+        for i in range(len(data['text'])):
+            # Skip empty text
+            if not data['text'][i].strip():
+                continue
+                
+            # Get line number and text
+            line_num = data['line_num'][i]
+            conf = data['conf'][i]
+            text = data['text'][i].strip()
+            
+            # Skip low confidence results
+            if conf < min_confidence:
+                continue
+                
+            if line_num not in lines:
+                lines[line_num] = {'text': [], 'confidence': []}
+                
+            lines[line_num]['text'].append(text)
+            lines[line_num]['confidence'].append(conf)
+        
+        # Process lines to find the most likely title
+        for line_num in sorted(lines.keys())[:max_lines]:
+            line_data = lines[line_num]
+            confidences = cast(List[float], line_data['confidence'])
+            avg_confidence = sum(confidences) / len(confidences)
+            
+            if avg_confidence >= min_confidence:
+                title = ' '.join(cast(List[str], line_data['text'])).strip()
+                
+                # Skip very short lines (likely not a title)
+                if len(title) < 5:
+                    continue
+                    
+                # Clean up the title
+                title = re.sub(r'\s+', ' ', title)  # Normalize whitespace
+                title = title.strip('"\'.,;:!?()[]{}')  # Remove surrounding punctuation
+                
+                logger.debug(f"Potential title found: {title} (confidence: {avg_confidence:.1f}%)")
+                return title
+        
+        logger.warning(f"No suitable title found in first {max_lines} lines of {pdf_path}")
+        return None
         
     except Exception as e:
-        logger.error(f"Error during OCR processing of {pdf_path}: {e}")
-        raise
+        logger.error(f"Error extracting title from {pdf_path}: {str(e)}")
+        return None
+
+def extract_title(pdf_path: str) -> str:
+    images = convert_from_path(pdf_path, dpi=300, first_page=1, last_page=1)
+    text = pytesseract.image_to_string(images[0])
+    for line in text.splitlines():
+        if line.strip():
+            return line.strip()
+    return ""

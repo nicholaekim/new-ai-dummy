@@ -6,8 +6,8 @@ to read and update spreadsheet data.
 """
 
 import logging
-from typing import List, Dict, Any, Optional, Union, Tuple
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class SheetsClient:
     """Client for interacting with Google Sheets API."""
     
-    def __init__(self, credentials_path: Path = None, service=None):
+    def __init__(self, credentials_path: Path = None, service=None, spreadsheet_id: str = None):
         """
         Initialize the Google Sheets client.
         
@@ -27,9 +27,11 @@ class SheetsClient:
             credentials_path: Path to service account credentials JSON file.
                             If not provided, uses the default from config.
             service: Optional pre-configured service object (used for testing)
+            spreadsheet_id: Optional spreadsheet ID to use (defaults to SPREADSHEET_ID from config)
         """
         self.credentials_path = credentials_path or SERVICE_KEY
         self._service = service
+        self._spreadsheet_id = spreadsheet_id or SPREADSHEET_ID
         
         if self._service is None:
             try:
@@ -78,6 +80,40 @@ class SheetsClient:
             logger.error(f"Error getting sheet tabs: {e}", exc_info=True)
             return []
     
+    def update_sheet(self, spreadsheet_id: str, range_name: str, values: List[List[Any]]) -> None:
+        """
+        Update a Google Sheet with the provided values.
+        
+        Args:
+            spreadsheet_id: The ID of the spreadsheet to update
+            range_name: The A1 notation of the range to update (e.g., 'Sheet1!A1')
+            values: 2D list of values to write to the sheet
+            
+        Raises:
+            googleapiclient.errors.HttpError: If the API request fails
+        """
+        if not values:
+            logger.warning("No values provided to update sheet")
+            return
+            
+        try:
+            body = {
+                'values': values
+            }
+            
+            result = self.service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=range_name,
+                valueInputOption='RAW',
+                body=body
+            ).execute()
+            
+            logger.debug(f"Updated {result.get('updatedCells')} cells in {range_name}")
+            
+        except Exception as e:
+            logger.error(f"Error updating sheet {range_name}: {e}")
+            raise
+    
     def find_tab_by_identifier(self, identifier: str) -> Optional[str]:
         """
         Find a tab by searching for an identifier in column C.
@@ -112,11 +148,11 @@ class SheetsClient:
     
     def get_row_mapping(self, tab_name: str, filenames: List[str]) -> Dict[str, int]:
         """
-        Get a mapping of filenames to their row numbers in column A.
+        Get a mapping of filenames to their row numbers in column C.
         
         Args:
             tab_name: Name of the sheet tab
-            filenames: List of filenames to search for in column A
+            filenames: List of filenames to search for in column C
             
         Returns:
             Dictionary mapping filenames to their 1-based row numbers
@@ -127,7 +163,7 @@ class SheetsClient:
         try:
             # Get all values from column C (C1:C1000)
             result = self.service.spreadsheets().values().get(
-                spreadsheetId=SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 range=f"'{tab_name}'!C1:C1000"
             ).execute()
             
@@ -148,7 +184,7 @@ class SheetsClient:
     
     def batch_update_cells(self, tab_name: str, updates: List[Dict[str, Any]]) -> bool:
         """
-        Update multiple cells in a batch operation.
+        Update multiple cells in a batch operation using values().batchUpdate.
         
         Args:
             tab_name: Name of the sheet tab
@@ -161,11 +197,12 @@ class SheetsClient:
             return False
             
         try:
-            # Prepare the request body
+            # Prepare the request body for values().batchUpdate
             data = []
             for update in updates:
                 if 'range' not in update or 'values' not in update:
                     continue
+                    
                 data.append({
                     'range': f"'{tab_name}'!{update['range']}",
                     'values': update['values']
@@ -173,24 +210,23 @@ class SheetsClient:
             
             if not data:
                 return False
-            
+                
+            # Execute the batch update using values().batchUpdate
             body = {
-                'valueInputOption': 'RAW',
+                'valueInputOption': 'USER_ENTERED',
                 'data': data
             }
             
-            # Make the batch update request
             result = self.service.spreadsheets().values().batchUpdate(
-                spreadsheetId=SPREADSHEET_ID,
+                spreadsheetId=self._spreadsheet_id,
                 body=body
             ).execute()
             
-            total_updated = result.get('totalUpdatedCells', 0)
-            logger.info(f"Updated {total_updated} cells")
+            logger.info(f"Updated {len(result.get('responses', []))} cells in batch update")
             return True
             
         except Exception as e:
-            logger.error(f"Error updating cells: {e}")
+            logger.error(f"Error in batch update: {e}")
             return False
             
     def fetch_all_tab_names(self) -> List[str]:
