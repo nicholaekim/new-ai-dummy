@@ -1,0 +1,12 @@
+google-cloud-documentai
+google-cloud-vision
+google-auth
+google-api-python-client
+boto3
+langchain
+openai
+chromadb
+pandas
+gspread
+oauth2client
+watchdog
