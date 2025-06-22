@@ -1,15 +1,23 @@
 import boto3
-import openai
-import json
 import os
+import re
 from typing import Dict, Any
-from config.settings import OPENAI_API_KEY
+from datetime import datetime
 
 def extract_text_with_textract(pdf_path: str) -> str:
-    """Extract text from PDF using AWS Textract."""
+    """
+    Extract text from PDF using AWS Textract.
+    
+    Args:
+        pdf_path: Path to the PDF file to process
+        
+    Returns:
+        str: Extracted text from the document
+    """
     try:
-        # Initialize Textract client with explicit region
-        textract = boto3.client('textract', region_name='us-east-1')  # or your preferred AWS region
+        from config.settings import AWS_REGION
+        # Initialize Textract client with region from settings
+        textract = boto3.client('textract', region_name=AWS_REGION)
         
         # Read the PDF file
         with open(pdf_path, 'rb') as file:
@@ -29,54 +37,78 @@ def extract_text_with_textract(pdf_path: str) -> str:
         print(f"Error extracting text with Textract: {e}")
         return ""
 
-def extract_metadata_with_openai(text: str) -> Dict[str, Any]:
-    """Extract structured metadata from text using OpenAI."""
-    try:
-        # Prepare the prompt
-        prompt = f"""Extract the following metadata from the text below. 
-        Return the result as a JSON object with these exact keys: "Title", "Date", "Volume", "Issue", "Description".
-        If a field cannot be determined, use an empty string.
-        
-        Text:
-        {text}
-        
-        JSON Response:"""
-        
-        # Call OpenAI API
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that extracts metadata from documents."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1
-        )
-        
-        # Parse the response
-        result = response.choices[0].message.content.strip()
-        
-        # Sometimes the response includes markdown code blocks, so we need to extract the JSON
-        if '```json' in result:
-            result = result.split('```json')[1].split('```')[0].strip()
-        
-        # Parse the JSON string to a dictionary
-        metadata = json.loads(result)
-        
-        # Ensure all required fields are present
-        required_fields = ["Title", "Date", "Volume", "Issue", "Description"]
-        for field in required_fields:
-            if field not in metadata:
-                metadata[field] = ""
-                
-        return metadata
-        
-    except Exception as e:
-        print(f"Error extracting metadata with OpenAI: {e}")
-        return {field: "" for field in ["Title", "Date", "Volume", "Issue", "Description"]}
-
-def parse_with_textract_llm(pdf_path: str) -> dict:
+def extract_metadata_from_text(text: str, filename: str) -> Dict[str, Any]:
     """
-    Fallback: use AWS Textract + OpenAI LLM to extract metadata fields.
+    Extract metadata directly from text using pattern matching.
+    
+    Args:
+        text: Extracted text from the document
+        filename: Original filename for fallback title
+        
+    Returns:
+        dict: Extracted metadata with keys: Title, Date, Volume, Issue, Description
+    """
+    metadata = {
+        'Title': '',
+        'Date': '',
+        'Volume': '',
+        'Issue': '',
+        'Description': text[:200]  # First 200 chars as description
+    }
+    
+    # Try to extract title (first non-empty line)
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    if lines:
+        metadata['Title'] = lines[0]
+    else:
+        metadata['Title'] = os.path.splitext(os.path.basename(filename))[0]
+    
+    # Try to find date patterns (YYYY-MM-DD, MM/DD/YYYY, etc.)
+    date_patterns = [
+        r'\b(\d{4}[-/]\d{1,2}[-/]\d{1,2})\b',  # YYYY-MM-DD or YYYY/MM/DD
+        r'\b(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b',  # MM-DD-YYYY or MM/DD/YYYY
+        r'\b(\d{1,2}\s+[A-Za-z]+\s+\d{4})\b',  # DD Month YYYY
+    ]
+    
+    for pattern in date_patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                # Try to parse the date and format it consistently
+                date_str = match.group(1)
+                # Try different date formats
+                for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%m/%d/%Y', '%d %B %Y', '%B %d, %Y'):
+                    try:
+                        date_obj = datetime.strptime(date_str, fmt)
+                        metadata['Date'] = date_obj.strftime('%Y-%m-%d')
+                        break
+                    except ValueError:
+                        continue
+                if metadata['Date']:
+                    break
+            except (IndexError, ValueError):
+                continue
+    
+    # Try to find volume/issue numbers
+    vol_issue_patterns = [
+        (r'\b[Vv]ol\.?\s*(\d+)\b', 'Volume'),
+        (r'\b[Vv](?:olume)?\s*(\d+)\b', 'Volume'),
+        (r'\b[Nn]o\.?\s*(\d+)\b', 'Issue'),
+        (r'\b[Ii]ssue\s*(\d+)\b', 'Issue'),
+    ]
+    
+    for pattern, field in vol_issue_patterns:
+        match = re.search(pattern, text)
+        if match:
+            metadata[field] = match.group(1)
+    
+    return metadata
+
+def parse_with_textract(pdf_path: str) -> dict:
+    """
+    Extract metadata from PDF using AWS Textract.
+    
+    This is the fallback method when Document AI fails.
     
     Args:
         pdf_path: Path to the PDF file to process
@@ -84,9 +116,6 @@ def parse_with_textract_llm(pdf_path: str) -> dict:
     Returns:
         dict: Extracted metadata with keys: Title, Date, Volume, Issue, Description
     """
-    print("Using Textract+OpenAI fallback for metadata extraction...")
-    
-    # First, extract text using Textract
     print(f"Extracting text from {pdf_path} using Textract...")
     text = extract_text_with_textract(pdf_path)
     
@@ -94,8 +123,8 @@ def parse_with_textract_llm(pdf_path: str) -> dict:
         print("No text could be extracted from the document")
         return {}
     
-    # Then, extract metadata using OpenAI
-    metadata = extract_metadata_with_openai(text)
+    # Extract metadata from the extracted text
+    print("Extracting metadata from text...")
+    metadata = extract_metadata_from_text(text, pdf_path)
     
-    print(f"Extracted metadata: {metadata}")
     return metadata

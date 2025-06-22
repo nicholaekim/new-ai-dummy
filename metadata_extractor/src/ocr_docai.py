@@ -5,7 +5,7 @@ from google.cloud import documentai_v1 as documentai
 from google.api_core.exceptions import GoogleAPICallError, PermissionDenied
 from google.api_core.client_options import ClientOptions
 from config.settings import GCP_PROJECT_ID, GCP_LOCATION, DOCAI_PROCESSOR
-from .ocr_textract_llm import parse_with_textract_llm
+from .ocr_textract_llm import parse_with_textract
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -80,5 +80,5 @@ def parse_with_docai(pdf_path: str) -> Dict[str, Any]:
             
     except Exception as e:
         logger.error(f"Failed to initialize Document AI client: {e}")
-        # Fall back to Textract+OpenAI
-        return parse_with_textract_llm(pdf_path)
+        # Fall back to Textract
+        return parse_with_textract(pdf_path)

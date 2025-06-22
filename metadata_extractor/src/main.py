@@ -9,22 +9,24 @@ sys.path.append(str(project_root))
 
 from config.settings import INPUT_DIR, AUTO_WATCH
 from src.ocr_docai import parse_with_docai
-from src.ocr_textract_llm import parse_with_textract_llm
-from src.rag_feedback import quality_check
+from src.ocr_textract_llm import parse_with_textract
 from src.sheets_writer import append_metadata, ensure_folders_exist
 from src.watcher import start_watcher
 
 def process_pdf(path: str):
     print(f"\nProcessing: {os.path.basename(path)}")
-    try:
-        print("Extracting metadata with Document AI...")
-        data = parse_with_docai(path)
-    except Exception as e:
-        print(f"Document AI failed, falling back to Textract+LLM: {str(e)}")
-        data = parse_with_textract_llm(path)
+    print("Extracting metadata with Document AI...")
+    data = parse_with_docai(path)  # This will automatically fall back to Textract if needed
     
-    print("Validating extracted data with RAG...")
-    data = quality_check(data)
+    if not data:
+        print("Warning: No metadata could be extracted from the document")
+        data = {
+            'Title': os.path.basename(path).rsplit('.', 1)[0],
+            'Date': '',
+            'Volume': '',
+            'Issue': '',
+            'Description': ''
+        }
     
     # Get tab and FF# from environment or use defaults
     tab_name = os.getenv('SHEET_TAB', 'Sheet1')
